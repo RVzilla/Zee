@@ -38,11 +38,13 @@ app = Flask(__name__)
 handler = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    system_instruction="คุณเป็น AI Assistant ที่ฉลาดและเป็นมิตร ตอบเป็นภาษาไทยถ้าผู้ใช้พูดภาษาไทย"
-)
+def get_model():
+    key = os.environ.get("GOOGLE_API_KEY", GOOGLE_API_KEY)
+    genai.configure(api_key=key)
+    return genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        system_instruction="คุณเป็น AI Assistant ที่ฉลาดและเป็นมิตร ตอบเป็นภาษาไทยถ้าผู้ใช้พูดภาษาไทย"
+    )
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
@@ -71,7 +73,7 @@ def ask_gemini(user_id: str, message: str) -> str:
     ]
 
     try:
-        chat = model.start_chat(history=gemini_history)
+        chat = get_model().start_chat(history=gemini_history)
         response = chat.send_message(message)
         reply = response.text
 
