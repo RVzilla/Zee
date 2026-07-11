@@ -42,7 +42,7 @@ def get_model():
     key = os.environ.get("GOOGLE_API_KEY", GOOGLE_API_KEY)
     genai.configure(api_key=key)
     return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="gemini-2.0-flash-lite",
         system_instruction="คุณเป็น AI Assistant ที่ฉลาดและเป็นมิตร ตอบเป็นภาษาไทยถ้าผู้ใช้พูดภาษาไทย"
     )
 
