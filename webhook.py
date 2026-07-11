@@ -1,19 +1,14 @@
 """
-LINE Bot Webhook + Claude Code (with memory per user)
-------------------------------------------------------
+LINE Bot Webhook + Claude AI (with memory per user)
+----------------------------------------------------
 Requirements:
-    pip install flask line-bot-sdk==3.11.0 gunicorn
-
-Setup:
-    1. สร้าง LINE Bot ที่ https://developers.line.biz
-    2. ตั้งค่า env variables: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
-    3. รัน: python webhook.py
+    pip install flask line-bot-sdk==3.11.0 anthropic gunicorn
 """
 
 import os
 import json
-import subprocess
 from flask import Flask, request, abort
+import anthropic
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -34,60 +29,53 @@ CHANNEL_SECRET = os.environ.get(
     "LINE_CHANNEL_SECRET",
     "8e757a4bcd76a5de15edfe630bb8f860"
 )
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SESSIONS_DIR = "sessions"
+MAX_HISTORY = 20  # เก็บบทสนทนาล่าสุด 20 ข้อความต่อ user
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 handler = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 
-def get_session_id(user_id: str) -> str | None:
-    """โหลด session ID ของ user (ถ้ามี)"""
+def load_history(user_id: str) -> list:
     path = os.path.join(SESSIONS_DIR, f"{user_id}.json")
     if os.path.exists(path):
         with open(path) as f:
-            return json.load(f).get("session_id")
-    return None
+            return json.load(f)
+    return []
 
 
-def save_session_id(user_id: str, session_id: str):
-    """บันทึก session ID ของ user"""
+def save_history(user_id: str, history: list):
     path = os.path.join(SESSIONS_DIR, f"{user_id}.json")
     with open(path, "w") as f:
-        json.dump({"session_id": session_id}, f)
+        json.dump(history[-MAX_HISTORY:], f, ensure_ascii=False)
 
 
 def ask_claude(user_id: str, message: str) -> str:
-    """ส่งข้อความไปถาม Claude Code และคืนคำตอบกลับมา"""
-    session_id = get_session_id(user_id)
-
-    cmd = ["claude", "--print", "--output-format", "json"]
-
-    if session_id:
-        cmd += ["--resume", session_id]
-
-    cmd.append(message)
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        return f"[Error]: {result.stderr.strip() or 'Claude Code ไม่ตอบกลับค่ะ'}"
+    history = load_history(user_id)
+    history.append({"role": "user", "content": message})
 
     try:
-        data = json.loads(result.stdout)
-        new_session_id = data.get("session_id")
-        if new_session_id:
-            save_session_id(user_id, new_session_id)
-        return data.get("result", "").strip()
-    except json.JSONDecodeError:
-        return result.stdout.strip()
+        response = claude.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=1024,
+            system="คุณเป็น AI Assistant ที่ฉลาดและเป็นมิตร ตอบเป็นภาษาไทยถ้าผู้ใช้พูดภาษาไทย",
+            messages=history,
+        )
+        reply = response.content[0].text
+        history.append({"role": "assistant", "content": reply})
+        save_history(user_id, history)
+        return reply
+    except Exception as e:
+        return f"เกิดข้อผิดพลาดค่ะ: {str(e)}"
 
 
 def reply_line(reply_token: str, text: str):
-    """ส่งข้อความกลับไปที่ LINE"""
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
@@ -101,12 +89,10 @@ def reply_line(reply_token: str, text: str):
 def webhook():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
 
 
@@ -115,7 +101,6 @@ def handle_message(event):
     user_id = event.source.user_id
     user_msg = event.message.text
 
-    # คำสั่งพิเศษ: พิมพ์ "ลืมทุกอย่าง" เพื่อ reset memory
     if user_msg.strip() == "ลืมทุกอย่าง":
         path = os.path.join(SESSIONS_DIR, f"{user_id}.json")
         if os.path.exists(path):
@@ -129,5 +114,4 @@ def handle_message(event):
 
 if __name__ == "__main__":
     print("LINE Bot กำลังรันที่ port 5000 ค่ะ...")
-    print(f"Sessions จะถูกเก็บที่โฟลเดอร์: {os.path.abspath(SESSIONS_DIR)}/")
     app.run(port=5000, debug=True)

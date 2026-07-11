@@ -2,7 +2,7 @@ services:
   - type: web
     name: line-claude-bot
     runtime: python
-    buildCommand: pip install -r requirements.txt && npm install -g @anthropic-ai/claude-code
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn webhook:app
     envVars:
       - key: ANTHROPIC_API_KEY
