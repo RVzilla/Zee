@@ -2,26 +2,30 @@
 LINE Bot Webhook + Claude Code (with memory per user)
 ------------------------------------------------------
 Requirements:
-    pip install flask line-bot-sdk
+    pip install flask line-bot-sdk==3.11.0 gunicorn
 
 Setup:
     1. สร้าง LINE Bot ที่ https://developers.line.biz
-    2. ใส่ CHANNEL_ACCESS_TOKEN และ CHANNEL_SECRET ด้านล่าง
+    2. ตั้งค่า env variables: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
     3. รัน: python webhook.py
-    4. รัน ngrok: ngrok http 5000
-    5. เอา ngrok URL ไปใส่ใน LINE Developers → Webhook URL
 """
 
 import os
 import json
 import subprocess
 from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    Configuration,
+    ApiClient,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage,
+)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-# รองรับทั้ง local (hardcode) และ Render (env variable)
 CHANNEL_ACCESS_TOKEN = os.environ.get(
     "LINE_CHANNEL_ACCESS_TOKEN",
     "ewWPRgQfuko8TeUAAFPF0C68WM7OUThhELWd9IUIlmmtmq4nBG9Quusf9ZKZx4WtT1IhD+pUzsU/CL69LTlygDqLLgCD1g8DMc9/xnYdH194LKYesJzEftbWhUhgtsAkDQb5ULqlEnm40ak7SHwZwdB04t89/1O/w1cDnyilFU="
@@ -34,8 +38,8 @@ SESSIONS_DIR = "sessions"
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
@@ -60,13 +64,8 @@ def ask_claude(user_id: str, message: str) -> str:
     """ส่งข้อความไปถาม Claude Code และคืนคำตอบกลับมา"""
     session_id = get_session_id(user_id)
 
-    cmd = [
-        "claude",
-        "--print",
-        "--output-format", "json",
-    ]
+    cmd = ["claude", "--print", "--output-format", "json"]
 
-    # ถ้ามี session เดิม → ให้จำบทสนทนาต่อ
     if session_id:
         cmd += ["--resume", session_id]
 
@@ -79,13 +78,23 @@ def ask_claude(user_id: str, message: str) -> str:
 
     try:
         data = json.loads(result.stdout)
-        # บันทึก session ID ใหม่ทุกครั้ง
         new_session_id = data.get("session_id")
         if new_session_id:
             save_session_id(user_id, new_session_id)
         return data.get("result", "").strip()
     except json.JSONDecodeError:
         return result.stdout.strip()
+
+
+def reply_line(reply_token: str, text: str):
+    """ส่งข้อความกลับไปที่ LINE"""
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text=text)]
+            )
+        )
 
 
 @app.route("/webhook", methods=["POST"])
@@ -101,7 +110,7 @@ def webhook():
     return "OK"
 
 
-@handler.add(MessageEvent, message=TextMessage)
+@handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_id = event.source.user_id
     user_msg = event.message.text
@@ -111,18 +120,11 @@ def handle_message(event):
         path = os.path.join(SESSIONS_DIR, f"{user_id}.json")
         if os.path.exists(path):
             os.remove(path)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="ลืมแล้วค่ะ เริ่มใหม่ได้เลย!")
-        )
+        reply_line(event.reply_token, "ลืมแล้วค่ะ เริ่มใหม่ได้เลย!")
         return
 
     reply = ask_claude(user_id, user_msg)
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
+    reply_line(event.reply_token, reply)
 
 
 if __name__ == "__main__":
